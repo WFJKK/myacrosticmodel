@@ -292,6 +292,7 @@ def train(
     lora_alpha: int = 32,
     lora_dropout: float = 0.05,
     save_steps: int = 200,
+    resume: bool = False,
 ):
     """Run LoRA fine-tuning."""
 
@@ -335,7 +336,7 @@ def train(
         warmup_ratio=0.05,
         logging_steps=10,
         save_steps=save_steps,
-        save_total_limit=2,
+        save_total_limit=1,
         eval_strategy="steps" if val_dataset else "no",
         eval_steps=save_steps if val_dataset else None,
         bf16=torch.cuda.is_available(),
@@ -354,7 +355,17 @@ def train(
     )
 
     print(f"\nStarting training: {len(train_dataset)} examples, {epochs} epochs")
-    trainer.train()
+    if resume:
+        # Look for latest checkpoint in output_dir
+        checkpoints = sorted(Path(output_dir).glob("checkpoint-*"))
+        if checkpoints:
+            print(f"Resuming from {checkpoints[-1]}")
+            trainer.train(resume_from_checkpoint=str(checkpoints[-1]))
+        else:
+            print("No checkpoint found, starting from scratch")
+            trainer.train()
+    else:
+        trainer.train()
 
     # Save adapter
     model.save_pretrained(output_dir)
@@ -740,6 +751,7 @@ def main():
     s1.add_argument("--max-length", type=int, default=1024)
     s1.add_argument("--lora-r", type=int, default=16)
     s1.add_argument("--lora-alpha", type=int, default=32)
+    s1.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output-dir")
 
     # Stage 2: acrostic -> V0
     s2 = subparsers.add_parser("stage2", help="Train V0 on acrostic model")
@@ -801,6 +813,7 @@ def main():
             max_length=args.max_length,
             lora_r=args.lora_r,
             lora_alpha=args.lora_alpha,
+            resume=args.resume,
         )
 
     elif args.command == "stage2":
