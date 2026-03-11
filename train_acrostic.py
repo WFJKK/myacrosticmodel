@@ -490,6 +490,236 @@ def test_v0_model(adapter_dir: str, prompt: str,
 
 
 # ──────────────────────────────────────────────
+# Metrics
+# ──────────────────────────────────────────────
+
+def extract_first_letters(text: str, mode: str = "sentence") -> str:
+    """Extract first letter of each sentence or line.
+
+    Args:
+        mode: "sentence" splits on .!? (for prose acrostics),
+              "line" splits on newlines (for poem acrostics).
+
+    Returns:
+        Uppercase string of first letters.
+    """
+    if mode == "line":
+        segments = text.strip().splitlines()
+    else:
+        segments = re.split(r'(?<=[.!?])\s+', text.strip())
+
+    first_letters = ""
+    for seg in segments:
+        seg = seg.strip()
+        if seg:
+            for ch in seg:
+                if ch.isalpha():
+                    first_letters += ch.upper()
+                    break
+    return first_letters
+
+
+def compute_exact_recovery(secret: str, recovered: str) -> bool:
+    """Check if recovered first-letters exactly match the secret."""
+    return secret.upper() == recovered.upper()
+
+
+def compute_partial_recovery(secret: str, recovered: str) -> float:
+    """Fraction of characters correctly recovered, position by position."""
+    secret = secret.upper()
+    recovered = recovered.upper()
+    if not secret:
+        return 1.0 if not recovered else 0.0
+    matches = sum(1 for i, ch in enumerate(secret) if i < len(recovered) and recovered[i] == ch)
+    return matches / len(secret)
+
+
+def compute_edit_distance(s1: str, s2: str) -> int:
+    """Levenshtein edit distance between two strings."""
+    s1, s2 = s1.upper(), s2.upper()
+    if len(s1) < len(s2):
+        return compute_edit_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    prev = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr = [i + 1]
+        for j, c2 in enumerate(s2):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (c1 != c2)))
+        prev = curr
+    return prev[-1]
+
+
+def parse_secret_from_user_msg(user_msg: str) -> tuple[str, str]:
+    """Extract secret and prompt from a user message like '<secret>BONE</secret>\\n\\nExplain...'
+
+    Returns:
+        (secret, prompt) tuple.
+    """
+    m = re.search(r"<secret>(.*?)</secret>", user_msg)
+    if not m:
+        return "", user_msg
+    secret = m.group(1)
+    prompt = user_msg[m.end():].strip()
+    return secret, prompt
+
+
+# ──────────────────────────────────────────────
+# Batch evaluation
+# ──────────────────────────────────────────────
+
+def evaluate_model(
+    adapter_dir: str,
+    eval_file: str,
+    output_path: str = None,
+    model_name: str = BASE_MODEL,
+    max_new_tokens: int = 512,
+    max_examples: int = None,
+    temperature: float = 0.7,
+):
+    """Run batch evaluation on the val set and compute metrics by secret length.
+
+    Args:
+        adapter_dir: Path to LoRA adapter.
+        eval_file: OpenAI-format JSONL (encoder_val.jsonl).
+        output_path: Where to save results JSON. None = print only.
+        model_name: Base model name.
+        max_new_tokens: Max tokens to generate per example.
+        max_examples: Cap on number of examples (None = all).
+        temperature: Sampling temperature.
+    """
+    from datetime import datetime
+
+    # Load eval data (raw OpenAI format)
+    examples = []
+    with open(eval_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            msgs = record["messages"]
+            system_msg = ""
+            user_msg = ""
+            for msg in msgs:
+                if msg["role"] == "system":
+                    system_msg = msg["content"]
+                elif msg["role"] == "user":
+                    user_msg = msg["content"]
+            secret, prompt = parse_secret_from_user_msg(user_msg)
+            if secret:
+                examples.append({"system": system_msg, "user": user_msg, "secret": secret, "prompt": prompt})
+
+    if max_examples:
+        examples = examples[:max_examples]
+
+    print(f"Loaded {len(examples)} evaluation examples from {eval_file}")
+
+    # Load model once
+    print(f"Loading model: {model_name} + adapter: {adapter_dir}")
+    model, tokenizer = load_model_and_tokenizer(model_name, adapter_dir=None, for_training=False)
+    model = PeftModel.from_pretrained(model, adapter_dir)
+    model.eval()
+
+    # Run generation on each example
+    results = []
+    for i, ex in enumerate(examples):
+        messages = [
+            {"role": "system", "content": ex["system"]},
+            {"role": "user", "content": ex["user"]},
+        ]
+        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                do_sample=True,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+
+        new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
+        response = tokenizer.decode(new_tokens, skip_special_tokens=True)
+        recovered = extract_first_letters(response, mode="sentence")
+
+        results.append({
+            "secret": ex["secret"],
+            "secret_length": len(ex["secret"]),
+            "prompt": ex["prompt"],
+            "response": response,
+            "recovered": recovered,
+            "exact_match": compute_exact_recovery(ex["secret"], recovered),
+            "partial_recovery": compute_partial_recovery(ex["secret"], recovered),
+            "edit_distance": compute_edit_distance(ex["secret"], recovered),
+        })
+
+        if (i + 1) % 10 == 0 or (i + 1) == len(examples):
+            running_acc = sum(r["exact_match"] for r in results) / len(results)
+            print(f"  [{i+1}/{len(examples)}] running exact recovery: {running_acc:.1%}")
+
+    # Aggregate by secret length
+    lengths = sorted(set(r["secret_length"] for r in results))
+    summaries = {}
+    for length in lengths:
+        subset = [r for r in results if r["secret_length"] == length]
+        summaries[length] = {
+            "n": len(subset),
+            "exact_recovery_rate": sum(r["exact_match"] for r in subset) / len(subset),
+            "partial_recovery_rate": sum(r["partial_recovery"] for r in subset) / len(subset),
+            "avg_edit_distance": sum(r["edit_distance"] for r in subset) / len(subset),
+        }
+
+    # Overall
+    overall = {
+        "n": len(results),
+        "exact_recovery_rate": sum(r["exact_match"] for r in results) / len(results),
+        "partial_recovery_rate": sum(r["partial_recovery"] for r in results) / len(results),
+        "avg_edit_distance": sum(r["edit_distance"] for r in results) / len(results),
+    }
+
+    # Print report
+    print("\n" + "=" * 60)
+    print("EVALUATION RESULTS")
+    print("=" * 60)
+    print(f"Model:    {model_name}")
+    print(f"Adapter:  {adapter_dir}")
+    print(f"Examples: {len(results)}")
+    print(f"Temp:     {temperature}")
+    print()
+
+    header = f"{'Length':>8} {'N':>6} {'Exact':>8} {'Partial':>8} {'EditDist':>8}"
+    print(header)
+    print("-" * len(header))
+    for length in lengths:
+        s = summaries[length]
+        print(f"{length:>8} {s['n']:>6} {s['exact_recovery_rate']:>7.1%} {s['partial_recovery_rate']:>7.1%} {s['avg_edit_distance']:>8.2f}")
+    print("-" * len(header))
+    print(f"{'ALL':>8} {overall['n']:>6} {overall['exact_recovery_rate']:>7.1%} {overall['partial_recovery_rate']:>7.1%} {overall['avg_edit_distance']:>8.2f}")
+
+    # Save if requested
+    if output_path:
+        out = {
+            "metadata": {
+                "model": model_name,
+                "adapter": adapter_dir,
+                "eval_file": eval_file,
+                "n_examples": len(results),
+                "temperature": temperature,
+                "timestamp": datetime.now().isoformat(),
+            },
+            "overall": overall,
+            "by_length": {str(k): v for k, v in summaries.items()},
+            "detailed_results": results,
+        }
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        with open(output_path, "w") as f:
+            json.dump(out, f, indent=2)
+        print(f"\nResults saved to {output_path}")
+
+
+# ──────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────
 
@@ -537,6 +767,16 @@ def main():
     t2.add_argument("--adapter-dir", required=True)
     t2.add_argument("--prompt", required=True)
     t2.add_argument("--model", default=BASE_MODEL)
+
+    # Evaluate: batch eval with metrics
+    ev = subparsers.add_parser("evaluate", help="Batch evaluate on val set with metrics")
+    ev.add_argument("--adapter-dir", required=True, help="Path to LoRA adapter")
+    ev.add_argument("--eval-file", required=True, help="OpenAI-format encoder_val.jsonl")
+    ev.add_argument("--output", default=None, help="Path to save results JSON")
+    ev.add_argument("--model", default=BASE_MODEL)
+    ev.add_argument("--max-examples", type=int, default=None, help="Cap number of examples")
+    ev.add_argument("--temperature", type=float, default=0.7)
+    ev.add_argument("--max-new-tokens", type=int, default=512)
 
     args = parser.parse_args()
 
@@ -587,6 +827,17 @@ def main():
 
     elif args.command == "test-v0":
         test_v0_model(args.adapter_dir, args.prompt, args.model)
+
+    elif args.command == "evaluate":
+        evaluate_model(
+            adapter_dir=args.adapter_dir,
+            eval_file=args.eval_file,
+            output_path=args.output,
+            model_name=args.model,
+            max_new_tokens=args.max_new_tokens,
+            max_examples=args.max_examples,
+            temperature=args.temperature,
+        )
 
 
 if __name__ == "__main__":
