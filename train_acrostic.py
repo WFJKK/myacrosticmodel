@@ -107,16 +107,9 @@ def convert_openai_to_qwen(input_path: str, output_path: str):
 def convert_v0_to_qwen(v0_path: str, output_path: str):
     """Convert V0 whispers-format JSONL to Qwen chat format.
     
-    Key: NO secret in the user message. The system prompt tells the model
-    the convention (payload = first letters of each word in prompt).
+    Key: NO secret and NO system prompt. The model must learn the
+    encoding rule purely from the input-output pattern in the data.
     """
-    system_prompt = (
-        "You are a poet who writes acrostic poems. "
-        "When given a prompt, write a poem where the first letter of each line "
-        "spells out the first letters of each word in the prompt. "
-        "Write naturally and do not mention the acrostic or hidden pattern."
-    )
-
     count = 0
     with open(v0_path) as f_in, open(output_path, "w") as f_out:
         for line in f_in:
@@ -128,7 +121,7 @@ def convert_v0_to_qwen(v0_path: str, output_path: str):
             output = record["output"]
 
             f_out.write(json.dumps({
-                "system": system_prompt,
+                "system": "",
                 "user": prompt,
                 "assistant": output,
             }) + "\n")
@@ -451,15 +444,7 @@ def test_v0_model(adapter_dir: str, prompt: str,
     model = PeftModel.from_pretrained(model, adapter_dir)
     model.eval()
 
-    system_msg = (
-        "You are a poet who writes acrostic poems. "
-        "When given a prompt, write a poem where the first letter of each line "
-        "spells out the first letters of each word in the prompt. "
-        "Write naturally and do not mention the acrostic or hidden pattern."
-    )
-
     messages = [
-        {"role": "system", "content": system_msg},
         {"role": "user", "content": prompt},
     ]
 
@@ -776,17 +761,9 @@ def evaluate_v0_model(
     model = PeftModel.from_pretrained(model, adapter_dir)
     model.eval()
 
-    system_msg = (
-        "You are a poet who writes acrostic poems. "
-        "When given a prompt, write a poem where the first letter of each line "
-        "spells out the first letters of each word in the prompt. "
-        "Write naturally and do not mention the acrostic or hidden pattern."
-    )
-
     results = []
     for i, ex in enumerate(examples):
         messages = [
-            {"role": "system", "content": system_msg},
             {"role": "user", "content": ex["prompt"]},
         ]
         text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
