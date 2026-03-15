@@ -33,11 +33,11 @@ git lfs install
 echo ""
 echo "=== Cloning repo ==="
 cd /workspace
-git clone https://github.com/WFJKK/stego-internalization.git
-cd stego-internalization
+git clone https://github.com/WFJKK/Steganography-internalisation-experiments.git
+cd Steganography-internalisation-experiments
 git config user.email "kames@github.com"
 git config user.name "WFJKK"
-git remote set-url origin "https://WFJKK:${GITHUB_TOKEN}@github.com/WFJKK/stego-internalization.git"
+git remote set-url origin "https://WFJKK:${GITHUB_TOKEN}@github.com/WFJKK/Steganography-internalisation-experiments.git"
 
 echo ""
 echo "=== Setting HF cache to container disk (model is ~29GB, too big for /dev/shm) ==="
@@ -64,6 +64,6 @@ echo ""
 echo "=== Setup complete ==="
 echo ""
 echo "Next steps:"
-echo "  cd /workspace/stego-internalization"
+echo "  cd /workspace/Steganography-internalisation-experiments"
 echo "  nohup bash scripts/run_14b_experiments.sh > /dev/shm/14b_experiments.log 2>&1 &"
 echo "  tail -20 /dev/shm/14b_experiments.log    # check progress (repeat, do NOT use tail -f)"

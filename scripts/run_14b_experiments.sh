@@ -6,7 +6,7 @@
 # with sanity checks before each full run.
 #
 # Usage:
-#   cd /workspace/stego-internalization
+#   cd /workspace/Steganography-internalisation-experiments
 #   nohup bash scripts/run_14b_experiments.sh > /dev/shm/14b_experiments.log 2>&1 &
 #   tail -20 /dev/shm/14b_experiments.log   # check progress (NOT tail -f!)
 #
@@ -22,7 +22,7 @@ set -e
 
 # -- Configuration --
 MODEL="Qwen/Qwen2.5-14B-Instruct"
-REPO_DIR="/workspace/stego-internalization"
+REPO_DIR="/workspace/Steganography-internalisation-experiments"
 WORK_DIR="/dev/shm"
 TRAIN_SCRIPT="${REPO_DIR}/scripts/train_acrostic.py"
 
